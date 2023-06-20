@@ -1,45 +1,35 @@
+mod cli;
 mod messages;
 
-use std::{
-    collections::HashMap,
-    io::Result,
-    sync::{Arc, Mutex},
-};
+use std::net::SocketAddr;
 
 use clap::Parser;
-use futures::{future::join_all, SinkExt, TryStreamExt};
+use cli::{CmdArgs, Config};
+use futures::TryStreamExt;
 use messages::Message;
-use serde::Deserialize;
 use tokio::{
     fs::read_to_string,
     net::{TcpListener, TcpStream},
     spawn,
-    sync::mpsc::{self, Sender},
 };
-use tokio_serde::formats::{Json, SymmetricalJson};
+use tokio_serde::{
+    formats::{Json, SymmetricalJson},
+    SymmetricallyFramed,
+};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct CmdArgs {
-    #[arg(short, long, default_value_t = String::from("config.toml"))]
-    config_path: String,
-}
+async fn listen(address: &str) -> std::io::Result<()> {
+    let listener = TcpListener::bind(address).await?;
+    println!("[i] Listeing on {}...", address);
 
-#[derive(Deserialize, Debug)]
-struct Config {
-    server: ServerConfig,
-}
-
-#[derive(Deserialize, Debug)]
-struct ServerConfig {
-    host: String,
-    port: u16,
-}
-
-impl ServerConfig {
-    pub fn get_socket_address(&self) -> String {
-        return format!("{}:{}", self.host, self.port);
+    loop {
+        match listener.accept().await {
+            Ok((client_socket, client_address)) => {
+                println!("[+] Accepted client from {}.", client_address);
+                spawn(handle_client(client_socket, client_address));
+            }
+            Err(error) => println!("[!] Could not accept client. Err: {}", error),
+        }
     }
 }
 
@@ -50,90 +40,36 @@ type BidirectionalFramed = tokio_serde::Framed<
     Json<Message, Message>,
 >;
 
-async fn start_server(config: Config) -> Result<()> {
-    let server_address = config.server.get_socket_address();
-    let listener = TcpListener::bind(server_address.as_str()).await?;
-    println!("[+] Listening on {}.", server_address);
-
-    let (write_db_channel, mut read_db_channel) = mpsc::channel::<Command>(32);
-
-    let server_task = spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((socket, addr)) => {
-                    println!("[+] Received connection from {}.", addr);
-
-                    let write_db_channel = write_db_channel.clone();
-                    spawn(async move {
-                        handle_client(write_db_channel, socket).await;
-                    });
-                }
-                Err(err) => {
-                    println!("[-] Failed to handle connection: {}.", err);
-                }
-            }
-        }
-    });
-
-    let db_task = spawn(async move {
-        while let Some(message) = read_db_channel.recv().await {
-            todo!();
-        }
-    });
-
-    join_all(vec![server_task, db_task]).await;
-
-    Ok(())
-}
-
-#[derive(Debug)]
-enum Command {
-    Set { Key: String },
-}
-
-async fn handle_client(write_db_channel: Sender<Command>, socket: TcpStream) {
-    let length_delimited = Framed::new(socket, LengthDelimitedCodec::new());
-    let mut bidirectional: BidirectionalFramed = tokio_serde::SymmetricallyFramed::new(
-        length_delimited,
+async fn handle_client(
+    client_socket: TcpStream,
+    client_address: SocketAddr,
+) -> std::io::Result<()> {
+    let length_delimited_framed = Framed::new(client_socket, LengthDelimitedCodec::new());
+    let mut bidirectional_framed: BidirectionalFramed = SymmetricallyFramed::new(
+        length_delimited_framed,
         SymmetricalJson::<Message>::default(),
     );
 
     loop {
-        match bidirectional.try_next().await {
+        match bidirectional_framed.try_next().await {
             Ok(Some(message)) => {
-                println!("[+] Received message: {:?}.", message);
-
-                let result = match message {
-                    Message::Ping => bidirectional.send(Message::Pong).await,
-                    Message::Consume { topic } => {
-                        write_db_channel
-                            .send(Command::Set { Key: topic })
-                            .await
-                            .unwrap();
-                        Ok(())
-                    }
-                    Message::Publish { topic, message } => Ok(()),
-                    Message::Pong => Ok(()),
-                    Message::Deliver { topic, message } => Ok(()),
-                };
-
-                match result {
-                    Ok(_) => {}
-                    Err(err) => {
-                        println!("Error processing message from connection: {}.", err);
-                        return;
-                    }
-                }
+                println!(
+                    "[+] Received message from {}: {:?}.",
+                    client_address, message
+                )
             }
             Ok(None) => {
-                println!("[+] Connection closed.");
-                return;
+                println!("[!] Client {} disconnected.", client_address);
+                break;
             }
-            Err(err) => {
-                println!("[-] Error receiving message: {}.", err);
-            }
+            Err(error) => println!(
+                "[!] Invalid message received from {}. Err: {}",
+                client_address, error
+            ),
         }
     }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -141,5 +77,6 @@ async fn main() {
     let args = CmdArgs::parse();
     let config_file = read_to_string(args.config_path).await.unwrap();
     let config: Config = toml::from_str(config_file.as_str()).unwrap();
-    start_server(config).await.unwrap()
+
+    listen(&config.get_socket_address()).await.unwrap()
 }
