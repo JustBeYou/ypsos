@@ -16,7 +16,6 @@ async fn main() {
     let mut bidirectional =
         tokio_serde::SymmetricallyFramed::new(length_delimited, SymmetricalJson::default());
 
-    bidirectional.send(json!(Message::Ping)).await.unwrap();
     bidirectional
         .send(json!(Message::Consume {
             topic: String::from("topic")

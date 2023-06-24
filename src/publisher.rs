@@ -16,7 +16,6 @@ async fn main() {
     let mut serialized =
         tokio_serde::SymmetricallyFramed::new(length_delimited, SymmetricalJson::default());
 
-    serialized.send(json!(Message::Ping)).await.unwrap();
     serialized
         .send(json!(Message::Publish {
             topic: String::from("topic"),

@@ -1,3 +1,4 @@
 [server]
 host = "localhost"
 port = 1234
+message_buffer_size = 128

@@ -10,13 +10,14 @@ pub struct CmdArgs {
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
-    server: ServerConfig,
+    pub server: ServerConfig,
 }
 
 #[derive(Deserialize, Debug)]
-struct ServerConfig {
-    host: String,
-    port: u16,
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub message_buffer_size: usize,
 }
 
 impl Config {
